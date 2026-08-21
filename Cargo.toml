@@ -1,0 +1,10 @@
+[package]
+name = "rpi-gaszaehler"
+version = "0.2.0"
+edition = "2024"
+
+[dependencies]
+env_logger = "0.11.8"
+log = "0.4.28"
+rppal = "0.22.1"
+rumqttc = "0.25.0"
