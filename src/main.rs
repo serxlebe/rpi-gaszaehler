@@ -5,13 +5,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use log::{info, debug, error};
+use std::env;
 use env_logger::Env;
 
 // --- Konfiguration ---
 // Passen Sie diese Werte an Ihre Umgebung an
-const GPIO_PIN: u8 = 22;
-const MQTT_BROKER_ADRESSE: &str = "192.168.2.3"; // z.B. "localhost" oder "192.168.1.10"
-const MQTT_PORT: u16 = 1893;
+const GPIO_PIN_DEFAULT: u8 = 22;
+const MQTT_BROKER_ADRESSE_DEFAULT: &str = "192.168.2.3";
+const MQTT_PORT_DEFAULT: u16 = 1893;
+const MQTT_USER_DEFAULT: &str = "fhem";
+const MQTT_PASSWORD_DEFAULT: &str = "Sonne2020";
 const MQTT_CLIENT_ID: &str = "rpi-gaszaehler";
 
 // MQTT-Topics
@@ -57,18 +60,39 @@ fn main() {
     // NEU: Atomic-Flag, um zu prüfen, ob der Startwert vom Broker geladen wurde.
     // Dies verhindert, dass wir unseren eigenen (neu gesendeten) Wert als "Startwert" lesen.
     let is_initialized = Arc::new(AtomicBool::new(false));
+    let gpio_pin: u8 = env::var("GPIO_PIN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(GPIO_PIN_DEFAULT);
+ 
+    let mqtt_broker_adresse: String = env::var("MQTT_HOST")
+        .unwrap_or_else(|_| MQTT_BROKER_ADRESSE_DEFAULT.to_string());
+ 
+    let mqtt_port: u16 = env::var("MQTT_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(MQTT_PORT_DEFAULT);
+ 
+    let mqtt_user: String = env::var("MQTT_USER")
+        .unwrap_or_else(|_| MQTT_USER_DEFAULT.to_string());
+ 
+    let mqtt_password: String = env::var("MQTT_PASSWORD")
+        .unwrap_or_else(|_| MQTT_PASSWORD_DEFAULT.to_string());
+ 
 
     // --- MQTT-Setup ---
-    let mut mqtt_options = MqttOptions::new(MQTT_CLIENT_ID, MQTT_BROKER_ADRESSE, MQTT_PORT);
+    let mut mqtt_options = MqttOptions::new(MQTT_CLIENT_ID, mqtt_broker_adresse.clone(), mqtt_port);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
-    mqtt_options.set_credentials("fhem","Sonne2020");
+    mqtt_options.set_credentials(mqtt_user, mqtt_password);
+
+    info!("MQTT-Zielserver: {}:{}", mqtt_broker_adresse, mqtt_port);
 
     let (client, mut connection) = Client::new(mqtt_options, 10);
     // Abonniere das "setze"-Topic
     client.subscribe(SETZE_TOPIC, QoS::AtLeastOnce).expect("MQTT subscribe failed");
     client.subscribe(WERT_TOPIC, QoS::AtLeastOnce).expect("MQTT subscribe failed (wert)");
 
-    info!("Verbunden mit MQTT-Broker auf {} und abonniert auf '{}' und '{}'", MQTT_BROKER_ADRESSE, SETZE_TOPIC, WERT_TOPIC);
+    info!("Verbunden mit MQTT-Broker auf {} und abonniert auf '{}' und '{}'", mqtt_broker_adresse, SETZE_TOPIC, WERT_TOPIC);
     // Klone für den GPIO-Thread
     let client_fuer_gpio = client.clone();
     let zaehler_fuer_gpio = zaehler_shared.clone();
@@ -87,11 +111,12 @@ fn main() {
 
     // --- GPIO-Thread ---
     // Dieser Thread kümmert sich ausschließlich um das Abhören des GPIO-Pins.
+    let gpio_pin_fuer_thread = gpio_pin;
     thread::spawn(move || {
         // Initialisiere GPIO
         let gpio = Gpio::new().expect("GPIO-Initialisierung fehlgeschlagen");
-        let mut pin = gpio.get(GPIO_PIN)
-            .expect(&format!("Pin {} konnte nicht abgerufen werden", GPIO_PIN))
+        let mut pin = gpio.get(gpio_pin_fuer_thread)
+            .expect(&format!("Pin {} konnte nicht abgerufen werden", gpio_pin_fuer_thread))
             .into_input_pullup(); // Pin als Input mit Pull-Up konfigurieren
 
         // Interrupt für fallende Flanke (High → Low)
@@ -101,7 +126,7 @@ fn main() {
         let mut letzte_ausloesung = Instant::now();
         let debounce_dauer = Duration::from_millis(DEBOUNCE_MS);
 
-        debug!("[GPIO] Warte auf Signale auf Pin {}...", GPIO_PIN);
+        debug!("[GPIO] Warte auf Signale auf Pin {}...", gpio_pin_fuer_thread);
 
         loop {
             // Blockiere, bis ein Interrupt (fallende Flanke) auftritt
